@@ -15,7 +15,13 @@ from pyrogram.errors import (
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-SESSION = os.getenv("SESSION")  # using your env name exactly
+SESSION = os.getenv("SESSION")  # your session string
+
+# Sanity print (safe: only shows lengths/ends)
+print(f"[BOOT] API_ID set? {'yes' if API_ID else 'no'} | "
+      f"API_HASH len={len(API_HASH)} | "
+      f"BOT_TOKEN tail={BOT_TOKEN[-6:] if BOT_TOKEN else 'None'} | "
+      f"SESSION len={len(SESSION) if SESSION else 0}")
 
 # =========================
 # Pyrogram clients
@@ -27,30 +33,20 @@ user = Client("user_session", api_id=API_ID, api_hash=API_HASH, session_string=S
 # Helpers / QoL
 # =========================
 def parse_private_link(link: str):
-    """
-    Accepts links like: https://t.me/c/123456789/10
-    Returns (chat_id, message_id) or (None, None) if invalid.
-    """
     if "/c/" not in link:
         return None, None
     parts = link.strip().split("/")
     try:
-        raw_chat_id = parts[-2]      # 123456789
-        message_id = int(parts[-1])  # 10
-        chat_id = int(f"-100{raw_chat_id}")  # internal peer id
+        raw_chat_id = parts[-2]
+        message_id = int(parts[-1])
+        chat_id = int(f"-100{raw_chat_id}")
         return chat_id, message_id
     except Exception:
         return None, None
 
 async def fetch_and_download(chat_id: int, message_id: int):
-    """
-    Tries to fetch a message and download its media.
-    Returns (file_path, error_text). On success error_text is None.
-    """
     try:
-        # Refresh peer cache (useful right after you join a channel)
-        await user.get_chat(chat_id)
-
+        await user.get_chat(chat_id)  # refresh peer cache
         msg = await user.get_messages(chat_id, message_id)
         media = msg.video or msg.document or msg.animation
         if not media:
@@ -59,7 +55,6 @@ async def fetch_and_download(chat_id: int, message_id: int):
         try:
             path = await user.download_media(msg, file_name="temp_video.mp4")
         except FileReferenceExpired:
-            # Re-fetch and retry once if file ref is stale
             msg = await user.get_messages(chat_id, message_id)
             path = await user.download_media(msg, file_name="temp_video.mp4")
 
@@ -74,7 +69,6 @@ async def fetch_and_download(chat_id: int, message_id: int):
     except PeerIdInvalid:
         return None, "Bad link or chat ID. Use a link like https://t.me/c/123456789/10."
     except FloodWait as e:
-        # Respect floodwait automatically
         await asyncio.sleep(e.value)
         return await fetch_and_download(chat_id, message_id)
     except RPCError as e:
@@ -84,33 +78,35 @@ async def fetch_and_download(chat_id: int, message_id: int):
 # Handlers (your original logic + debug)
 # =========================
 @bot.on_message(filters.command("start") & filters.private)
-async def start_command(client: Client, message: Message):
+async def start_command(_, message: Message):
+    print("[HANDLER] /start")
     await message.reply_text(
         "Hi! Send me a link to a restricted/private channel post "
         "(format: https://t.me/c/123456789/10). "
         "I must be a member of that channel."
     )
 
-# Debug handler: replies to any private text that isn't /start
+# Debug: reply to any private text that isn't /start
 @bot.on_message(filters.private & ~filters.command("start"))
 async def debug_ping(_, m: Message):
+    print("[HANDLER] debug_ping")
     await m.reply_text("I see you. Now send a link like: https://t.me/c/123456789/10")
 
 @bot.on_message(filters.text & filters.private)
-async def handle_link(client: Client, message: Message):
-    # If someone sends text that is actually a link, handle it here
+async def handle_link(_, message: Message):
     link = message.text.strip()
     chat_id, message_id = parse_private_link(link)
     if not chat_id:
-        return  # debug_ping already answered
+        return  # debug handler already replied
 
+    print(f"[HANDLER] handle_link chat_id={chat_id} msg_id={message_id}")
+    file_path = None
     try:
         file_path, err = await fetch_and_download(chat_id, message_id)
         if err:
             await message.reply_text(err)
             return
 
-        # Send the media back to the user (video/doc auto-detected by Telegram)
         await bot.send_document(
             chat_id=message.chat.id,
             document=file_path,
@@ -118,7 +114,7 @@ async def handle_link(client: Client, message: Message):
         )
     except Exception as e:
         await message.reply_text(f"Error: {e}")
-        print(f"Error: {e}")
+        print(f"[ERROR] {e}")
     finally:
         if file_path and os.path.exists(file_path):
             try:
@@ -143,14 +139,22 @@ def run_flask():
 # Runner
 # =========================
 async def main():
+    # Start both clients
     await bot.start()
+
+    # Delete any existing webhook so long-poll works
+    try:
+        await bot.delete_webhook(True)
+        print("[BOOT] Deleted webhook (if any). Long-polling enabled.")
+    except Exception as e:
+        print(f"[BOOT] delete_webhook error (ignored): {e}")
+
     await user.start()
-    print("Bot is running...")
-    await idle()  # keep both clients alive
+    print("[BOOT] Bot started, User session started. Waiting for updates...")
+    await idle()
     await user.stop()
     await bot.stop()
 
 if __name__ == "__main__":
-    # Start the tiny web server so Render detects an open port
     threading.Thread(target=run_flask, daemon=True).start()
     asyncio.run(main())
