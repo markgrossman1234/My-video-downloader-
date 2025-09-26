@@ -1,23 +1,19 @@
-# Use official Python runtime as base image
-FROM python:3.12-slim
+FROM python:3.11-slim
 
-# Install system dependencies (FFmpeg) as root
-RUN apt-get update && apt-get install -y \
+# System dependencies (build tools + ffmpeg if you need it)
+RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
 COPY requirements.txt .
+RUN pip install --upgrade pip setuptools wheel
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the bot code
-COPY bot.py .
+COPY . .
 
-# Expose port if needed (not required for Telegram bots, but good practice)
-EXPOSE 8080
+ENV PORT=10000
 
-# Run the bot
-CMD ["python3", "bot.py"]
+CMD ["python", "bot.py"]
